@@ -1,0 +1,100 @@
+Authentication & RBAC Flow
+--------------------------
+- JWT-based authentication. On login, a signed JWT is issued containing user id, role, and name.
+- Every protected route passes through the `authenticate` middleware which verifies the token.
+- The `authorize(...roles)` middleware checks the user's role against allowed roles.
+- Principal and Teacher permissions are strictly separated:
+  - Teachers: upload content, view own content
+  - Principals: view all content (with filters/pagination), approve/reject content, view analytics
+- Public broadcast endpoint requires no authentication.
+
+Subject-based System Design
+----------------------------
+- Each piece of content belongs to a subject (maths, science, etc.).
+- content_slots table maps a subject to a slot group (UNIQUE constraint on subject).
+- content_schedule links content to a slot with a rotation_order and duration (minutes).
+- Multiple content items per subject are ordered by rotation_order.
+- Each subject has its own independent rotation cycle.
+
+Upload Handling Approach
+-------------------------
+- Multer middleware handles multipart/form-data file uploads.
+- Storage is configurable via USE_S3 env var:
+  - Local (default): files stored in /uploads, served via Express static middleware.
+  - S3 (bonus): files uploaded directly to AWS S3 using multer-s3; file_url = S3 object URL.
+- Allowed formats: JPG, PNG, GIF (validated by MIME type).
+- Max file size: 10MB (configurable via MAX_FILE_SIZE_MB env var).
+- File is saved with a unique timestamped filename to avoid collisions.
+
+Approval Workflow Design
+-------------------------
+- Content is created with status='pending'.
+- Only the principal can approve or reject pending content.
+- Approval sets status='approved', approved_by, approved_at.
+- Rejection sets status='rejected' and stores rejection_reason.
+- Only approved content is ever exposed via the public broadcast API.
+
+Scheduling / Rotation Logic (VERY IMPORTANT)
+---------------------------------------------
+- A teacher sets start_time and end_time on each content item.
+- Content is only "live" if: status=approved AND start_time <= NOW <= end_time.
+- Each content item in a subject has a rotation_order and duration (minutes) in content_schedule.
+- The system calculates the total cycle duration = sum of all durations for that subject.
+- The anchor time is the earliest start_time among the subject's active content.
+- elapsed = (NOW - anchor) % totalCycleDuration
+- The system walks through rotation_order items accumulating durations until elapsed falls
+  within a slot, identifying the currently active content.
+- This is stateless — no cron jobs needed. The active content is computed on every request.
+- Each subject rotates independently.
+
+Edge Case Handling
+-------------------
+- Case 1: No approved content → returns { message: "No content available" }
+- Case 2: Approved but outside time window → filtered out by SQL query, returns empty response
+- Case 3: Invalid subject / non-existent teacher → returns { message: "No content available" }
+- Case 4: Content approved but no schedule entry → first content item for subject is returned
+
+Database Design Decisions
+--------------------------
+- users: stores both principals and teachers, differentiated by role column.
+- content: central table with all metadata, status lifecycle, and scheduling fields.
+- content_slots: one row per subject (UNIQUE constraint), acts as a grouping key for schedules.
+  Uses INSERT ... ON CONFLICT DO NOTHING to prevent race conditions.
+- content_schedule: links content to a slot with ordering and duration for rotation.
+- content_access_log: records every live API hit for analytics (content_id, teacher_id, subject).
+- Foreign keys with ON DELETE CASCADE ensure schedule/log entries are cleaned up with content.
+- Indexes on content(status), content(uploaded_by), content_access_log(subject, content_id)
+  for fast query performance.
+
+Folder Structure
+-----------------
+src/
+  controllers/   - Thin request handlers (auth, content, broadcast, analytics)
+  routes/        - Express route definitions
+  services/      - Business logic (auth, content, broadcast, analytics)
+  middlewares/   - JWT auth, RBAC, file upload (multer), rate limiting
+  models/        - DB query abstractions (user, content)
+  utils/         - DB pool, SQL schema, input validation, Redis cache helper
+uploads/         - Local file storage (used when USE_S3=false)
+
+Middleware Usage
+-----------------
+- authenticate: verifies JWT on all private routes
+- authorize: role-based guard, called after authenticate
+- upload (multer): handles file parsing, type/size validation on upload route
+  Switches between local disk and S3 storage based on USE_S3 env var
+- broadcastLimiter (express-rate-limit): 60 req/min per IP on public endpoint
+- Global error handler: catches multer errors and returns clean JSON responses
+
+Scalability Approach
+---------------------
+- Stateless scheduling: no server-side state or cron jobs; rotation computed per request.
+- DB connection pooling via pg.Pool for efficient connection reuse.
+- Redis caching (ioredis): /content/live/:teacherId responses cached with configurable TTL
+  (default 30s) to reduce DB load under high student traffic. System degrades gracefully
+  if Redis is unavailable — cache is silently skipped.
+- Rate limiting (express-rate-limit): protects the public broadcast endpoint from abuse.
+- S3 storage: removes local disk dependency, enables horizontal scaling across multiple servers.
+- Pagination on GET /content: prevents large result sets from overwhelming the principal view.
+- Analytics logging: fire-and-forget inserts to content_access_log — never blocks the response.
+- Future: message queue (SQS/RabbitMQ) for async approval notifications to teachers.
