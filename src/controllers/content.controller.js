@@ -22,7 +22,7 @@ const getMyContent = async (req, res) => {
   }
 };
 
-// Supports: ?status=pending&subject=maths&teacher_id=1&page=1&limit=20
+
 const getAllContent = async (req, res) => {
   try {
     const result = await ContentService.getAllContent(req.query);

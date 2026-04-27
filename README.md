@@ -15,7 +15,7 @@ A backend system for broadcasting educational content from teachers to students,
 ### 1. Prerequisites
 - Node.js >= 18
 - PostgreSQL running locally
-- Redis (optional — for caching bonus)
+- Redis (optional — for caching)
 
 ### 2. Install dependencies
 ```bash

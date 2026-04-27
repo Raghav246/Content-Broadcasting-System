@@ -3,7 +3,6 @@ const ContentModel = require('../models/content.model');
 const upload = async ({ file, body, userId }) => {
   const { title, subject, description, start_time, end_time, rotation_duration } = body;
 
-  // Determine file_url: S3 gives location, local gives filename
   const file_url = file.location || `/uploads/${file.filename}`;
 
   const content = await ContentModel.create({
@@ -30,7 +29,7 @@ const upload = async ({ file, body, userId }) => {
 
 const getMyContent = (userId) => ContentModel.findByTeacher(userId);
 
-// Supports: status, subject, teacher_id, page, limit
+
 const getAllContent = async ({ status, subject, teacher_id, page, limit }) => {
   const parsedLimit  = Math.min(parseInt(limit) || 20, 100);
   const parsedPage   = Math.max(parseInt(page) || 1, 1);
